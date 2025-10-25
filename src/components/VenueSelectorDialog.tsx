@@ -42,6 +42,8 @@ export const VenueSelectorDialog = ({
       
       const allInterests = [...new Set([...commonInterests])];
       
+      console.log('Fetching places for interests:', allInterests);
+      
       supabase.functions.invoke('search-places', {
         body: {
           lat: DEFAULT_CITY_CENTER.lat,
@@ -50,14 +52,16 @@ export const VenueSelectorDialog = ({
           radius: 1000, // 1km radius
         }
       }).then(({ data, error }) => {
+        console.log('Search places response:', { data, error });
+        
         if (error) {
           console.error('Error fetching places:', error);
-          toast.error('Failed to load venues');
+          toast.error('Failed to load venues from Google Maps. Please try again.');
           setIsLoading(false);
           return;
         }
         
-        if (data?.places) {
+        if (data?.places && data.places.length > 0) {
           const mappedVenues: VenueSuggestion[] = data.places.map((place: any) => {
             const distanceM = metersBetween(
               DEFAULT_CITY_CENTER.lat,
@@ -81,8 +85,15 @@ export const VenueSelectorDialog = ({
             };
           });
           
+          console.log('Mapped venues:', mappedVenues);
           setVenues(mappedVenues);
+        } else {
+          console.log('No places returned from API');
         }
+        setIsLoading(false);
+      }).catch(err => {
+        console.error('Exception calling search-places:', err);
+        toast.error('Network error loading venues');
         setIsLoading(false);
       });
     }
