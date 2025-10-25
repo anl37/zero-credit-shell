@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, MapPin, Clock, Star } from "lucide-react";
+import { ArrowLeft, MapPin, Clock, Star, Loader2 } from "lucide-react";
 import { VenueSuggestion, ConnectionProfile } from "@/types/connection";
-import { formatDistance } from "@/lib/location-utils";
-import { getDurhamVenues } from "@/lib/durham-venues";
-import { SpacesMap } from "./SpacesMap";
-import { getVenueStatus } from "@/lib/venue-hours";
+import { formatDistance, metersBetween } from "@/lib/location-utils";
+import { GoogleSpacesMap } from "./GoogleSpacesMap";
+import { supabase } from "@/integrations/supabase/client";
+import { DEFAULT_CITY_CENTER } from "@/config/city";
+import { toast } from "sonner";
 
 interface VenueSelectorDialogProps {
   open: boolean;
@@ -22,7 +23,7 @@ interface VenueSelectorDialogProps {
 export const VenueSelectorDialog = ({
   open,
   connection,
-  venues,
+  venues: _unusedVenues,
   commonInterests,
   onClose,
   onSelectVenue,
@@ -30,7 +31,69 @@ export const VenueSelectorDialog = ({
 }: VenueSelectorDialogProps) => {
   const [selectedVenue, setSelectedVenue] = useState<VenueSuggestion | null>(null);
   const [selectedMapVenue, setSelectedMapVenue] = useState<VenueSuggestion | null>(null);
-  const [allVenues] = useState<VenueSuggestion[]>(() => getDurhamVenues());
+  const [venues, setVenues] = useState<VenueSuggestion[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Fetch real places from Google Maps when dialog opens
+  useEffect(() => {
+    if (open && connection) {
+      setIsLoading(true);
+      setVenues([]);
+      
+      const allInterests = [...new Set([...commonInterests])];
+      
+      supabase.functions.invoke('search-places', {
+        body: {
+          lat: DEFAULT_CITY_CENTER.lat,
+          lng: DEFAULT_CITY_CENTER.lng,
+          interests: allInterests,
+          radius: 1000, // 1km radius
+        }
+      }).then(({ data, error }) => {
+        if (error) {
+          console.error('Error fetching places:', error);
+          toast.error('Failed to load venues');
+          setIsLoading(false);
+          return;
+        }
+        
+        if (data?.places) {
+          const mappedVenues: VenueSuggestion[] = data.places.map((place: any) => {
+            const distanceM = metersBetween(
+              DEFAULT_CITY_CENTER.lat,
+              DEFAULT_CITY_CENTER.lng,
+              place.lat,
+              place.lng
+            );
+            
+            return {
+              id: place.id,
+              name: place.name,
+              category: formatCategory(place.category),
+              lat: place.lat,
+              lng: place.lng,
+              distanceM,
+              matchScore: Math.floor(place.rating * 20), // Convert 0-5 rating to 0-100 score
+              tags: place.types?.slice(0, 3) || [],
+              openNow: place.openNow,
+              rating: place.rating,
+              description: place.vicinity || '',
+            };
+          });
+          
+          setVenues(mappedVenues);
+        }
+        setIsLoading(false);
+      });
+    }
+  }, [open, connection, commonInterests]);
+
+  const formatCategory = (category: string): string => {
+    return category
+      .split('_')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  };
 
   const getMatchColor = (score: number) => {
     if (score >= 80) return "bg-success text-success-foreground";
@@ -39,9 +102,9 @@ export const VenueSelectorDialog = ({
   };
 
   const handleMapVenueClick = (venue: any) => {
-    const durhamVenue = allVenues.find(v => v.id === venue.id);
-    if (durhamVenue) {
-      setSelectedMapVenue(durhamVenue);
+    const matchedVenue = venues.find(v => v.id === venue.id);
+    if (matchedVenue) {
+      setSelectedMapVenue(matchedVenue);
     }
   };
 
@@ -51,8 +114,6 @@ export const VenueSelectorDialog = ({
       setSelectedMapVenue(null);
     }
   };
-
-  const selectedVenueStatus = selectedMapVenue ? getVenueStatus(selectedMapVenue) : null;
 
   if (!connection) return null;
 
@@ -77,11 +138,18 @@ export const VenueSelectorDialog = ({
 
         {/* Venues List */}
         <div className="flex-1 overflow-y-auto p-6">
-          <h3 className="font-semibold text-sm text-muted-foreground mb-3">
-            Top {venues.length} venues for you
-          </h3>
-          <div className="space-y-3">
-            {venues.map((venue) => (
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-primary mb-3" />
+              <p className="text-sm text-muted-foreground">Finding the best spots for you...</p>
+            </div>
+          ) : (
+            <>
+              <h3 className="font-semibold text-sm text-muted-foreground mb-3">
+                Top {venues.length} venues from Google Maps
+              </h3>
+              <div className="space-y-3">
+                {venues.map((venue) => (
               <div
                 key={venue.id}
                 className={`gradient-card rounded-2xl p-4 transition-all ${
@@ -120,17 +188,14 @@ export const VenueSelectorDialog = ({
                       {venue.rating.toFixed(1)}
                     </span>
                   )}
-                  {(() => {
-                    const status = getVenueStatus(venue);
-                    return (
-                      <span className="flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        <span className={status.open ? "text-success" : "text-muted-foreground"}>
-                          {status.label}
-                        </span>
+                  {venue.openNow !== undefined && (
+                    <span className="flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      <span className={venue.openNow ? "text-success" : "text-muted-foreground"}>
+                        {venue.openNow ? "Open now" : "Closed"}
                       </span>
-                    );
-                  })()}
+                    </span>
+                  )}
                 </div>
 
                 <Button
@@ -142,71 +207,73 @@ export const VenueSelectorDialog = ({
                 </Button>
               </div>
             ))}
-          </div>
+              </div>
 
-          {/* Map Section */}
-          <div className="mt-8">
-            <h3 className="font-semibold text-lg mb-1">Explore 50+ Durham Spots</h3>
-            <p className="text-sm text-muted-foreground mb-4">
-              Tap any pin to view details and select
-            </p>
-            <div className="relative">
-              <SpacesMap 
-                venues={allVenues}
-                onVenueSelect={handleMapVenueClick}
-                selectedVenueId={selectedMapVenue?.id}
-                height="500px"
-                showHeader={false}
-              />
-              
-              {/* Info Panel - Bottom Left */}
-              {selectedMapVenue && (
-                <div 
-                  className="absolute bottom-4 left-4 bg-background/95 backdrop-blur-sm rounded-xl p-4 shadow-lg z-[1000] max-w-xs"
-                  role="region"
-                  aria-live="polite"
-                >
-                  <h4 className="font-semibold text-foreground truncate mb-1">
-                    {selectedMapVenue.name}
-                  </h4>
-                  <p className="text-xs text-muted-foreground mb-2">
-                    {selectedMapVenue.category}
-                  </p>
-                  <div className="flex flex-col gap-1 text-xs">
-                    {selectedVenueStatus && (
-                      <span className={`flex items-center gap-1 ${selectedVenueStatus.open ? 'text-success' : 'text-muted-foreground'}`}>
-                        <Clock className="w-3 h-3" />
-                        {selectedVenueStatus.label}
-                      </span>
-                    )}
-                    {selectedMapVenue.rating && (
-                      <span className="flex items-center gap-1 text-muted-foreground">
-                        <Star className="w-3 h-3" />
-                        {selectedMapVenue.rating.toFixed(1)}
-                      </span>
-                    )}
-                    <span className="flex items-center gap-1 text-muted-foreground">
-                      <MapPin className="w-3 h-3" />
-                      {formatDistance(selectedMapVenue.distanceM)}
-                    </span>
+              {/* Map Section */}
+              <div className="mt-8">
+                <h3 className="font-semibold text-lg mb-1">Explore on Map</h3>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Tap any pin to view details and select
+                </p>
+                <div className="relative">
+                  <GoogleSpacesMap 
+                    venues={venues}
+                    onVenueSelect={handleMapVenueClick}
+                    selectedVenueId={selectedMapVenue?.id}
+                    height="500px"
+                    showHeader={false}
+                  />
+                  
+                  {/* Info Panel - Bottom Left */}
+                  {selectedMapVenue && (
+                    <div 
+                      className="absolute bottom-4 left-4 bg-background/95 backdrop-blur-sm rounded-xl p-4 shadow-lg z-[1000] max-w-xs"
+                      role="region"
+                      aria-live="polite"
+                    >
+                      <h4 className="font-semibold text-foreground truncate mb-1">
+                        {selectedMapVenue.name}
+                      </h4>
+                      <p className="text-xs text-muted-foreground mb-2">
+                        {selectedMapVenue.category}
+                      </p>
+                      <div className="flex flex-col gap-1 text-xs">
+                        {selectedMapVenue.openNow !== undefined && (
+                          <span className={`flex items-center gap-1 ${selectedMapVenue.openNow ? 'text-success' : 'text-muted-foreground'}`}>
+                            <Clock className="w-3 h-3" />
+                            {selectedMapVenue.openNow ? "Open now" : "Closed"}
+                          </span>
+                        )}
+                        {selectedMapVenue.rating && (
+                          <span className="flex items-center gap-1 text-muted-foreground">
+                            <Star className="w-3 h-3" />
+                            {selectedMapVenue.rating.toFixed(1)}
+                          </span>
+                        )}
+                        <span className="flex items-center gap-1 text-muted-foreground">
+                          <MapPin className="w-3 h-3" />
+                          {formatDistance(selectedMapVenue.distanceM)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Select Button - Bottom Right */}
+                  <div className="absolute bottom-4 right-4 z-[1000]">
+                    <Button
+                      onClick={handleConfirmMapSelection}
+                      disabled={!selectedMapVenue}
+                      size="lg"
+                      className="shadow-lg"
+                      aria-disabled={!selectedMapVenue}
+                    >
+                      Select This Spot
+                    </Button>
                   </div>
                 </div>
-              )}
-
-              {/* Select Button - Bottom Right */}
-              <div className="absolute bottom-4 right-4 z-[1000]">
-                <Button
-                  onClick={handleConfirmMapSelection}
-                  disabled={!selectedMapVenue}
-                  size="lg"
-                  className="shadow-lg"
-                  aria-disabled={!selectedMapVenue}
-                >
-                  Select This Spot
-                </Button>
               </div>
-            </div>
-          </div>
+            </>
+          )}
         </div>
       </DialogContent>
     </Dialog>

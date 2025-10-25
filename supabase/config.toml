@@ -1,1 +1,10 @@
 project_id = "mqodylqsoifmqnqnqyei"
+
+[functions.google-maps-proxy]
+verify_jwt = false
+
+[functions.geocode-location]
+verify_jwt = false
+
+[functions.search-places]
+verify_jwt = false
