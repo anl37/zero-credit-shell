@@ -62,17 +62,20 @@ export const GoogleSpacesMap = ({
           throw new Error('Failed to get Google Maps API key');
         }
 
-        // Load Google Maps script with Places library
-        const script = document.createElement('script');
-        script.src = `https://maps.googleapis.com/maps/api/js?key=${keyData.apiKey}&libraries=places,marker&v=weekly`;
-        script.async = true;
-        script.defer = true;
-        
-        await new Promise<void>((resolve, reject) => {
-          script.onload = () => resolve();
-          script.onerror = reject;
-          document.head.appendChild(script);
-        });
+        // Check if script already loaded
+        if (!window.google) {
+          // Load Google Maps script with Places library
+          const script = document.createElement('script');
+          script.src = `https://maps.googleapis.com/maps/api/js?key=${keyData.apiKey}&libraries=places,marker&v=weekly`;
+          script.async = true;
+          script.defer = true;
+          
+          await new Promise<void>((resolve, reject) => {
+            script.onload = () => resolve();
+            script.onerror = reject;
+            document.head.appendChild(script);
+          });
+        }
         
         // Initialize map
         const map = new google.maps.Map(containerRef.current, {
@@ -87,53 +90,51 @@ export const GoogleSpacesMap = ({
 
         mapRef.current = map;
 
-        // Create a Places service
-        const service = new google.maps.places.PlacesService(map);
-
-        // Search for places near each venue location
+        // Add markers for our venues
         venues.forEach((location) => {
-          const request = {
-            location: { lat: location.lat, lng: location.lng },
-            radius: 50, // Search within 50 meters
-            keyword: location.name,
-          };
+          const marker = new google.maps.Marker({
+            map,
+            position: { lat: location.lat, lng: location.lng },
+            title: location.name,
+          });
 
-          service.nearbySearch(request, (results, status) => {
-            if (status === google.maps.places.PlacesServiceStatus.OK && results && results[0]) {
-              const place = results[0];
-              
-              // Create an info window that will show on click
-              const infoWindow = new google.maps.InfoWindow();
-              
-              // Create a marker for this place
-              const marker = new google.maps.Marker({
-                map,
-                position: place.geometry?.location,
-                title: place.name,
-              });
-
-              // Add click listener
-              marker.addListener('click', () => {
-                if (onVenueSelect && location.id) {
-                  onVenueSelect(location);
-                }
-                
-                const count = location.id ? locationCounts[location.id] || 0 : 0;
-                const content = `
-                  <div style="padding: 8px;">
-                    <h3 style="margin: 0 0 8px 0; font-weight: bold;">${location.name}</h3>
-                    <p style="margin: 0; font-size: 14px;">${count} ${count === 1 ? 'person' : 'people'} open to connect</p>
-                  </div>
-                `;
-                infoWindow.setContent(content);
-                infoWindow.open(map, marker);
-              });
-
-              if (location.id) {
-                markersRef.current.set(location.id, marker as any);
-              }
+          // Add click listener to marker
+          marker.addListener('click', () => {
+            if (onVenueSelect) {
+              onVenueSelect(location);
             }
           });
+
+          if (location.id) {
+            markersRef.current.set(location.id, marker as any);
+          }
+        });
+
+        // Add listener for clicks on map POIs (Google's built-in pins)
+        map.addListener('click', (event: google.maps.MapMouseEvent) => {
+          // Check if click was on a POI
+          const placeId = (event as any).placeId;
+          if (placeId && onVenueSelect) {
+            // Get place details
+            const service = new google.maps.places.PlacesService(map);
+            service.getDetails(
+              { placeId: placeId, fields: ['name', 'geometry', 'formatted_address', 'types', 'rating', 'opening_hours'] },
+              (place, status) => {
+                if (status === google.maps.places.PlacesServiceStatus.OK && place && place.geometry?.location) {
+                  // Create a venue object from the place
+                  const venue: Location = {
+                    id: placeId,
+                    name: place.name || 'Unknown Place',
+                    lat: place.geometry.location.lat(),
+                    lng: place.geometry.location.lng(),
+                    category: place.types?.[0] || 'place',
+                    type: place.types?.[0] || 'place',
+                  };
+                  onVenueSelect(venue);
+                }
+              }
+            );
+          }
         });
 
         setIsLoading(false);
